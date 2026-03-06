@@ -44,7 +44,8 @@ void mVUdispatcherAB(mV)
 		// Load VU's MXCSR state
 		if (mvuNeedsFPCRUpdate(mVU)) {
 //            xLDMXCSR(ptr32[isVU0 ? &EmuConfig.Cpu.VU0FPCR.bitmask : &EmuConfig.Cpu.VU1FPCR.bitmask]);
-            armAsm->Msr(a64::FPCR, armLoad64(isVU0 ? PTR_CPU(Cpu.VU0FPCR.bitmask) : PTR_CPU(Cpu.VU1FPCR.bitmask)));
+            armLoad(EEX, isVU0 ? PTR_CPU(Cpu.VU0FPCR.bitmask) : PTR_CPU(Cpu.VU1FPCR.bitmask));
+            armAsm->Msr(a64::FPCR, REX);
         }
 
         // Load Regs
@@ -105,7 +106,8 @@ void mVUdispatcherAB(mV)
 		// Load EE's MXCSR state
 		if (mvuNeedsFPCRUpdate(mVU)) {
 //            xLDMXCSR(ptr32[&EmuConfig.Cpu.FPUFPCR.bitmask]);
-            armAsm->Msr(a64::FPCR, armLoad64(PTR_CPU(Cpu.FPUFPCR.bitmask)));
+            armLoad(EEX, PTR_CPU(Cpu.FPUFPCR.bitmask));
+            armAsm->Msr(a64::FPCR, REX);
         }
 
 		// = The first two DWORD or smaller arguments are passed in ECX and EDX registers;
@@ -140,7 +142,9 @@ void mVUdispatcherCD(mV)
         // Load VU's MXCSR state
         if (mvuNeedsFPCRUpdate(mVU)) {
 //            xLDMXCSR(ptr32[isVU0 ? &EmuConfig.Cpu.VU0FPCR.bitmask : &EmuConfig.Cpu.VU1FPCR.bitmask]);
-            armAsm->Msr(a64::FPCR, armLoad64(isVU0 ? PTR_CPU(Cpu.VU0FPCR.bitmask) : PTR_CPU(Cpu.VU1FPCR.bitmask)));
+            armLoad(EEX, isVU0 ? PTR_CPU(Cpu.VU0FPCR.bitmask) : PTR_CPU(Cpu.VU1FPCR.bitmask));
+            armAsm->Msr(a64::FPCR, REX);
+
         }
 
         mVUrestoreRegs(mVU);
@@ -172,7 +176,8 @@ void mVUdispatcherCD(mV)
         // Load EE's MXCSR state
         if (mvuNeedsFPCRUpdate(mVU)) {
 //            xLDMXCSR(ptr32[&EmuConfig.Cpu.FPUFPCR.bitmask]);
-            armAsm->Msr(a64::FPCR, armLoad64(PTR_CPU(Cpu.FPUFPCR.bitmask)));
+            armLoad(EEX, PTR_CPU(Cpu.FPUFPCR.bitmask));
+            armAsm->Msr(a64::FPCR, REX);
         }
 
         armEndStackFrame();
@@ -202,13 +207,13 @@ static void mVUGenerateWaitMTVU(mV)
 
         armAsm->Push(a64::xzr, a64::XRegister(i));
     }
-    //
+    // Save all Q registers (q0-q15 including xmmPQ) as full 128-bit values.
+    // On ARM64 the upper 64 bits of ALL Q registers are volatile across calls,
+    // so saving only the D (lower 64) portion loses the Z/W components of any
+    // cached VF register and the P/pending_p elements of xmmPQ.
     for (i = 0; i < static_cast<int>(iREGCNT_XMM); ++i)
     {
-        if (!armIsCallerSavedXmm(i))
-            continue;
-
-        armAsm->Push(a64::d31, a64::DRegister(i));
+        armAsm->Str(a64::QRegister(i), a64::MemOperand(a64::sp, -16, a64::PreIndex));
     }
 
     ////
@@ -220,10 +225,7 @@ static void mVUGenerateWaitMTVU(mV)
 
     for (i = static_cast<int>(iREGCNT_XMM - 1); i >= 0; --i)
     {
-        if (!armIsCallerSavedXmm(i))
-            continue;
-
-        armAsm->Pop(a64::DRegister(i), a64::d31);
+        armAsm->Ldr(a64::QRegister(i), a64::MemOperand(a64::sp, 16, a64::PostIndex));
     }
     //
     for (i = static_cast<int>(iREGCNT_GPR - 1); i >= 0; --i)

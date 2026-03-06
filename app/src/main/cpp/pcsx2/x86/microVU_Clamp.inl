@@ -30,9 +30,13 @@ void mVUclamp1(microVU& mVU, const xmm& reg, const xmm& regT1, int xyzw, bool bC
 		{
 			case 1: case 2: case 4: case 8:
 //				xMIN.SS(reg, ptr32[mVUglob.maxvals]);
-                armAsm->Fminnm(reg.S(), reg.S(), armLoadPtrV(PTR_CPU(mVUglob.maxvals)).S());
 //				xMAX.SS(reg, ptr32[mVUglob.minvals]);
-                armAsm->Fmaxnm(reg.S(), reg.S(), armLoadPtrV(PTR_CPU(mVUglob.minvals)).S());
+                // ARM64: scalar FP (reg.S() as dest) zeroes upper 96 bits — use scratch+INS.
+                // armLoadPtrV always loads into RQSCRATCH (q30), so use RQSCRATCH3 (q29)
+                // to hold the intermediate min result across the second armLoadPtrV call.
+                armAsm->Fminnm(RQSCRATCH3.S(), reg.S(), armLoadPtrV(PTR_CPU(mVUglob.maxvals)).S());
+                armAsm->Fmaxnm(RQSCRATCH3.S(), RQSCRATCH3.S(), armLoadPtrV(PTR_CPU(mVUglob.minvals)).S());
+                armAsm->Ins(reg.V4S(), 0, RQSCRATCH3.V4S(), 0);
 				break;
 			default:
 //				xMIN.PS(reg, ptr32[mVUglob.maxvals]);

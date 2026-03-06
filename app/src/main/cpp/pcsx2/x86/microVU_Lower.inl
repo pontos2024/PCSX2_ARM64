@@ -230,7 +230,9 @@ static __fi void mVU_EATAN_(mV, const xmm& PQ, const xmm& Fs, const xmm& t1, con
 //	xMOVSS(PQ, Fs);
     armAsm->Mov(PQ.S(), 0, Fs.S(), 0);
 //	xMUL.SS(PQ, ptr32[mVUglob.T1]);
-    armAsm->Fmul(PQ.S(), PQ.S(), armLoadPtrV(PTR_CPU(mVUglob.T1)).S());
+    // Scalar Fmul zeros PQ[1..3] (ARM64 ABI); use RQSCRATCH3 + INS to preserve Q/P pending.
+    armAsm->Fmul(RQSCRATCH3.S(), PQ.S(), armLoadPtrV(PTR_CPU(mVUglob.T1)).S());
+    armAsm->Ins(PQ.V4S(), 0, RQSCRATCH3.V4S(), 0);
 //	xMOVAPS(t2, Fs);
     armAsm->Mov(t2.Q(), Fs.Q());
 	EATANhelper(PTR_CPU(mVUglob.T2));
@@ -241,7 +243,8 @@ static __fi void mVU_EATAN_(mV, const xmm& PQ, const xmm& Fs, const xmm& t1, con
 	EATANhelper(PTR_CPU(mVUglob.T7));
 	EATANhelper(PTR_CPU(mVUglob.T8));
 //	xADD.SS(PQ, ptr32[mVUglob.Pi4]);
-    armAsm->Fadd(PQ.S(), PQ.S(), armLoadPtrV(PTR_CPU(mVUglob.Pi4)).S());
+    armAsm->Fadd(RQSCRATCH3.S(), PQ.S(), armLoadPtrV(PTR_CPU(mVUglob.Pi4)).S());
+    armAsm->Ins(PQ.V4S(), 0, RQSCRATCH3.V4S(), 0);
 //	xPSHUF.D(PQ, PQ, mVUinfo.writeP ? 0x27 : 0xC6);
     armPSHUFD(PQ, PQ, mVUinfo.writeP ? 0x27 : 0xC6);
 }
@@ -269,7 +272,8 @@ mVUop(mVU_EATAN)
 //		xSUB.SS(Fs,    ptr32[mVUglob.one]);
         armAsm->Fsub(Fs.S(), Fs.S(), armLoadPtrV(PTR_CPU(mVUglob.one)).S());
 //		xADD.SS(xmmPQ, ptr32[mVUglob.one]);
-        armAsm->Fadd(xmmPQ.S(), xmmPQ.S(), armLoadPtrV(PTR_CPU(mVUglob.one)).S());
+        armAsm->Fadd(RQSCRATCH3.S(), xmmPQ.S(), armLoadPtrV(PTR_CPU(mVUglob.one)).S());
+        armAsm->Ins(xmmPQ.V4S(), 0, RQSCRATCH3.V4S(), 0);
 		SSE_DIVSS(mVU, Fs, xmmPQ);
 		mVU_EATAN_(mVU, xmmPQ, Fs, t1, t2);
 		mVU.regAlloc->clearNeeded(Fs);
@@ -377,9 +381,11 @@ mVUop(mVU_EEXP)
 //		xMOVSS  (xmmPQ, Fs);
         armAsm->Mov(xmmPQ.S(), 0, Fs.S(), 0);
 //		xMUL.SS (xmmPQ, ptr32[mVUglob.E1]);
-        armAsm->Fmul(xmmPQ.S(), xmmPQ.S(), armLoadPtrV(PTR_CPU(mVUglob.E1)).S());
+        armAsm->Fmul(RQSCRATCH3.S(), xmmPQ.S(), armLoadPtrV(PTR_CPU(mVUglob.E1)).S());
+        armAsm->Ins(xmmPQ.V4S(), 0, RQSCRATCH3.V4S(), 0);
 //		xADD.SS (xmmPQ, ptr32[mVUglob.one]);
-        armAsm->Fadd(xmmPQ.S(), xmmPQ.S(), armLoadPtrV(PTR_CPU(mVUglob.one)).S());
+        armAsm->Fadd(RQSCRATCH3.S(), xmmPQ.S(), armLoadPtrV(PTR_CPU(mVUglob.one)).S());
+        armAsm->Ins(xmmPQ.V4S(), 0, RQSCRATCH3.V4S(), 0);
 //		xMOVAPS(t1, Fs);
         armAsm->Mov(t1.Q(), Fs.Q());
 		SSE_MULSS(mVU, t1, Fs);
@@ -419,6 +425,7 @@ static __fi void mVU_sumXYZ(mV, const xmm& PQ, const xmm& Fs)
 //	xMOVSS(PQ, Fs);
 
     armAsm->Fmul(PQ.V4S(), Fs.V4S(), Fs.V4S());
+    armAsm->Ins(PQ.V4S(), 3, a64::wzr);           // Zero W² element (DPPS 0x71 excludes W)
     armAsm->Faddp(PQ.V4S(), PQ.V4S(), PQ.V4S());
     armAsm->Faddp(PQ.S(), PQ.V2S());
 }
@@ -531,7 +538,9 @@ mVUop(mVU_ERSADD)
 		const xmm& Fs = mVU.regAlloc->allocReg(_Fs_, 0, _X_Y_Z_W);
 //		xPSHUF.D       (xmmPQ, xmmPQ, mVUinfo.writeP ? 0x27 : 0xC6); // Flip xmmPQ to get Valid P instance
         armPSHUFD(xmmPQ, xmmPQ, mVUinfo.writeP ? 0x27 : 0xC6);
-		mVU_sumXYZ(mVU, xmmPQ, Fs);
+        // Use RQSCRATCH to avoid corrupting xmmPQ elements 1-3 (Q/P pending values)
+		mVU_sumXYZ(mVU, RQSCRATCH, Fs);
+        armAsm->Mov(xmmPQ.S(), 0, RQSCRATCH.S(), 0);
 //		xMOVSSZX       (Fs, ptr32[mVUglob.one]);
         armAsm->Ldr(Fs, PTR_CPU(mVUglob.one));
 		SSE_DIVSS (mVU, Fs, xmmPQ);
@@ -564,7 +573,9 @@ mVUop(mVU_ERSQRT)
 //		xAND.PS       (Fs, ptr128[mVUglob.absclip]);
         armAsm->And(Fs.V16B(), Fs.V16B(), armLoadPtrV(PTR_CPU(mVUglob.absclip)).V16B());
 //		xSQRT.SS      (xmmPQ, Fs);
-        armAsm->Fsqrt(xmmPQ.S(), Fs.S());
+        // ARM64: Fsqrt with .S() clears xmmPQ[1..3]; use RQSCRATCH + INS to preserve Q/P pending
+        armAsm->Fsqrt(RQSCRATCH.S(), Fs.S());
+        armAsm->Mov(xmmPQ.S(), 0, RQSCRATCH.S(), 0);
 //		xMOVSSZX      (Fs, ptr32[mVUglob.one]);
         armAsm->Ldr(Fs, PTR_CPU(mVUglob.one));
 		SSE_DIVSS(mVU, Fs, xmmPQ);
@@ -594,7 +605,9 @@ mVUop(mVU_ESADD)
 		const xmm& Fs = mVU.regAlloc->allocReg(_Fs_, 0, _X_Y_Z_W);
 //		xPSHUF.D(xmmPQ, xmmPQ, mVUinfo.writeP ? 0x27 : 0xC6); // Flip xmmPQ to get Valid P instance
         armPSHUFD(xmmPQ, xmmPQ, mVUinfo.writeP ? 0x27 : 0xC6);
-		mVU_sumXYZ(mVU, xmmPQ, Fs);
+        // Use RQSCRATCH to avoid corrupting xmmPQ elements 1-3 (Q/P pending values)
+		mVU_sumXYZ(mVU, RQSCRATCH, Fs);
+        armAsm->Mov(xmmPQ.S(), 0, RQSCRATCH.S(), 0);
 //		xPSHUF.D(xmmPQ, xmmPQ, mVUinfo.writeP ? 0x27 : 0xC6); // Flip back
         armPSHUFD(xmmPQ, xmmPQ, mVUinfo.writeP ? 0x27 : 0xC6);
 		mVU.regAlloc->clearNeeded(Fs);
@@ -680,7 +693,9 @@ mVUop(mVU_ESQRT)
 //		xAND.PS (Fs, ptr128[mVUglob.absclip]);
         armAsm->And(Fs.V16B(), Fs.V16B(), armLoadPtrV(PTR_CPU(mVUglob.absclip)).V16B());
 //		xSQRT.SS(xmmPQ, Fs);
-        armAsm->Fsqrt(xmmPQ.S(), Fs.S());
+        // ARM64: Fsqrt with .S() clears xmmPQ[1..3]; use RQSCRATCH + INS to preserve Q/P pending
+        armAsm->Fsqrt(RQSCRATCH.S(), Fs.S());
+        armAsm->Mov(xmmPQ.S(), 0, RQSCRATCH.S(), 0);
 //		xPSHUF.D(xmmPQ, xmmPQ, mVUinfo.writeP ? 0x27 : 0xC6); // Flip back
         armPSHUFD(xmmPQ, xmmPQ, mVUinfo.writeP ? 0x27 : 0xC6);
 		mVU.regAlloc->clearNeeded(Fs);
@@ -1706,7 +1721,7 @@ mVUop(mVU_LQD)
 //			xDEC(regS);
             armAsm->Sub(regS, regS, 1);
 //			xMOVSX(gprT1, xRegister16(regS)); // TODO: Confirm
-            armAsm->Sxth(gprT1, regS);
+            armAsm->Uxth(gprT1, regS);
 			mVU.regAlloc->clearNeeded(regS);
 			mVUaddrFix(mVU, gprT1q);
 			is = gprT1q;
@@ -1749,7 +1764,7 @@ mVUop(mVU_LQI)
 		{
 			const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Is_, mVUlow.backupVI);
 //			xMOVSX(gprT1, xRegister16(regS)); // TODO: Confirm
-            armAsm->Sxth(gprT1, regS);
+            armAsm->Uxth(gprT1, regS);
 //			xINC(regS);
             armAsm->Add(regS, regS, 1);
 			mVU.regAlloc->clearNeeded(regS);

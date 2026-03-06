@@ -267,7 +267,10 @@ __fi void mVUbackupRegs(microVU& mVU, bool toMemory = false, bool onlyNeeded = f
             }
         }
 
-        ////
+        // xmmPQ (q15) holds [Q, pending_q, P, pending_p]. The upper 64 bits
+        // (P and pending_p, elements 2-3) live in the ABI-volatile upper half
+        // of q15 and are clobbered by any C++ call. Save the full Q register.
+        armAsm->Str(xmmPQ.Q(), a64::MemOperand(a64::sp, -16, a64::PreIndex));
 
         e = iREGCNT_XMM;
         for (i = 0; i < e; ++i)
@@ -275,8 +278,10 @@ __fi void mVUbackupRegs(microVU& mVU, bool toMemory = false, bool onlyNeeded = f
             if (!armIsCallerSavedXmm(i))
                 continue;
 
-            if (!onlyNeeded || mVU.regAlloc->checkCachedReg(i) || xmmPQ.GetCode() == i) {
-                armAsm->Push(a64::xzr, a64::DRegister(i));
+            if (!onlyNeeded || mVU.regAlloc->checkCachedReg(i)) {
+                // Use Q (128-bit) instead of D (64-bit): D saves only X/Y,
+                // losing the Z/W components of any cached VF register.
+                armAsm->Str(a64::QRegister(i), a64::MemOperand(a64::sp, -16, a64::PreIndex));
             }
         }
     }
@@ -300,10 +305,13 @@ __fi void mVUrestoreRegs(microVU& mVU, bool fromMemory = false, bool onlyNeeded 
             if (!armIsCallerSavedXmm(i))
                 continue;
 
-            if (!onlyNeeded || mVU.regAlloc->checkCachedReg(i) || xmmPQ.GetCode() == i) {
-                armAsm->Pop(a64::DRegister(i), a64::xzr);
+            if (!onlyNeeded || mVU.regAlloc->checkCachedReg(i)) {
+                armAsm->Ldr(a64::QRegister(i), a64::MemOperand(a64::sp, 16, a64::PostIndex));
             }
         }
+
+        // Restore xmmPQ (must mirror the save in mVUbackupRegs above).
+        armAsm->Ldr(xmmPQ.Q(), a64::MemOperand(a64::sp, 16, a64::PostIndex));
 
         ////
 
@@ -403,10 +411,9 @@ __fi void mVUaddrFix(mV, const a64::Register& gprReg)
             armAsm->And(reg32, reg32, 0x3f);
 
 //			xADD(gprReg, (u128*)VU1.VF - (u128*)VU0.Mem);
-            a64::MemOperand mop1 = PTR_CPU(vuRegs[1].VF);
-            a64::MemOperand mop2 = PTR_CPU(vuRegs[0].Mem);
-            armAsm->Sub(REX, mop1.GetBaseRegister(), mop2.GetBaseRegister());
-            armAsm->Add(gprReg, gprReg, REX);
+        s64 offset = offsetof(cpuRegistersPack, vuRegs[1].VF) -
+                     offsetof(cpuRegistersPack, vuRegs[0].Mem);
+        armAsm->Add(gprReg, gprReg, offset);
 
 //		jmpB.SetTarget();
         armBind(&jmpB);
@@ -718,12 +725,27 @@ void ADD_SS_TriAceHack(microVU& mVU, const xmm& to, const xmm& from)
 }
 
 #define clampOp(opX, isPS) \
-	do { \
-		mVUclamp3(mVU, to, t1, (isPS) ? 0xf : 0x8); \
-		mVUclamp3(mVU, from, t1, (isPS) ? 0xf : 0x8); \
-		opX(to.V4S(), to.V4S(), from.V4S()); \
-		mVUclamp4(mVU, to, t1, (isPS) ? 0xf : 0x8); \
-	} while (0)
+    do { \
+        if(INSTANT_VU1) { \
+            /* Pre-op clamp only XYZ */ \
+            mVUclamp3(mVU, to, t1, (isPS) ? 0xf : 0x8); \
+            mVUclamp3(mVU, from, t1, (isPS) ? 0xf : 0x8); \
+            /* PS = vector op (all 4 lanes). SS: ARM64 scalar FP (to.S()) zeroes upper 96 bits  */ \
+            /* of the dest register — catastrophic for VF registers. Compute into RQSCRATCH   */ \
+            /* then INS element 0 back, preserving elements 1-3 (matches x86 ADDSS/MULSS).   */ \
+            if (isPS) { opX(to.V4S(), to.V4S(), from.V4S()); } \
+            else { opX(RQSCRATCH.S(), to.S(), from.S()); armAsm->Ins(to.V4S(), 0, RQSCRATCH.V4S(), 0); } \
+            /* Final clamp includes W */ \
+            mVUclamp4(mVU, to, t1, (isPS) ? 0xf : 0x8); \
+        } else { \
+            /* Normal behavior: clamp XYZ + W before, then op, then clamp W after */ \
+            mVUclamp4(mVU, to, t1, (isPS) ? 0xf : 0x8); \
+            mVUclamp4(mVU, from, t1, (isPS) ? 0xf : 0x8); \
+            if (isPS) { opX(to.V4S(), to.V4S(), from.V4S()); } \
+            else { opX(RQSCRATCH.S(), to.S(), from.S()); armAsm->Ins(to.V4S(), 0, RQSCRATCH.V4S(), 0); } \
+            mVUclamp4(mVU, to, t1, (isPS) ? 0xf : 0x8); \
+        } \
+    } while(0)
 
 void SSE_MAXPS(mV, const xmm& to, const xmm& from, const xmm& t1 = a64::NoVReg, const xmm& t2 = a64::NoVReg)
 {

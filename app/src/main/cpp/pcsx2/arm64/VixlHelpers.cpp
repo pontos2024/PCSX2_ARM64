@@ -981,8 +981,8 @@ void armMOVMSKPS(const a64::Register& reg32, const a64::VRegister& regQ)
 void armPBLENDW(const a64::VRegister& regDst, const a64::VRegister& regSrc)
 {
     armAsm->Mov(RQSCRATCH, regDst);
-    armAsm->Movi(regDst.V4S(), 0xFFFF0000);
-    armAsm->Bsl(regDst.V16B(), RQSCRATCH.V16B(), regSrc.V16B());
+    armAsm->Movi(regDst.V2D(), 0x0000FFFF0000FFFFull);
+    armAsm->Bsl(regDst.V16B(), regSrc.V16B(), RQSCRATCH.V16B());
 }
 
 // kArm64I8x16SConvertI16x8
@@ -999,18 +999,11 @@ void armPACKSSWB(const a64::VRegister& regDst, const a64::VRegister& regSrc)
 
 void armPMOVMSKB(const a64::Register& regDst, const a64::VRegister& regSrc)
 {
-    a64::VRegister tmp = RQSCRATCH;
-    a64::VRegister mask = RQSCRATCH2;
-    //
-    armAsm->Sshr(tmp.V16B(), regSrc.V16B(), 7);
-    armAsm->Movi(mask.V2D(), 0x8040'2010'0804'0201);
-    armAsm->And(tmp.V16B(), mask.V16B(), tmp.V16B());
-
-    armAsm->Ext(mask.V16B(), tmp.V16B(), tmp.V16B(), 8);
-    armAsm->Zip1(tmp.V16B(), tmp.V16B(), mask.V16B());
-
-    armAsm->Addv(tmp.H(), tmp.V8H());
-    armAsm->Mov(regDst, tmp.V8H(), 0);
+    armAsm->Sshr(RQSCRATCH.V16B(), regSrc.V16B(), 7);
+    armAsm->Movi(RQSCRATCH2.V2D(), 0x8040201008040201ull);
+    armAsm->And(RQSCRATCH.V16B(), RQSCRATCH2.V16B(), RQSCRATCH.V16B());
+    armAsm->Addv(RQSCRATCH.B(), RQSCRATCH.V8B());  // sum lower 8 bytes only → byte 0
+    armAsm->Mov(regDst, RQSCRATCH.V8B(), 0);
 }
 
 void armSHUFPS(const a64::VRegister& dstreg, const a64::VRegister& srcreg, int pIndex)

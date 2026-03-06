@@ -527,9 +527,10 @@ public:
         int i;
 		for (i = 0; i < xmmTotal; ++i)
 		{
-			if (!armIsCallerSavedXmm(i))
-				continue;
-
+			// On ARM64, only the lower 64 bits (d8-d15) are callee-saved.
+			// The upper 64 bits of ALL Q registers are volatile across C++ calls.
+			// VF registers cached in q9-q14 would have their Z/W components
+			// silently corrupted if we don't flush them here too.
 			writeBackReg(xmm(i));
 			if (clearNeeded || !xmmMap[i].isNeeded)
 				clearReg(i);
